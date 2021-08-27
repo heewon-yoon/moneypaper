@@ -1,0 +1,495 @@
+---
+title: "interdistrict"
+author: "Heewon Yoon"
+date: "8/27/2021"
+output: html_document
+---
+
+Bring from RSQL
+```{r}
+dime$cycle[dime$bonica_rid=="cand880"]
+### subset data using RSQL ####
+
+conn <- dbConnect(RSQLite::SQLite(), "dime.sqlite3")
+dbListTables(conn)                  
+
+# get colnames of contribDB
+contrib <- dbGetQuery(conn, "SELECT * from contribDB limit 10")
+colnames(contrib)
+
+# subset data
+dime <- dbGetQuery(conn, "SELECT cycle, transaction_id, amount, date, bonica_cid,
+           contributor_type, contributor_gender, contributor_city, contributor_state, 
+           contributor_zipcode, recipient_name, bonica_rid, recipient_party, 
+           recipient_type, recipient_state, seat, election_type, contributor_district_90s, 
+           contributor_district_00s, contributor_district_10s, contributor_cfscore, 
+           candidate_cfscore FROM contribDB WHERE contributor_type = 'I' AND recipient_type = 'cand' 
+                    AND seat = 'federal:house' AND election_type = 'P'")
+
+# save subsetted data
+write.csv(dime, "dime_1014.csv")
+```
+
+Data Cleaning
+```{r}
+setwd("~/Desktop/Yoon/5. 2020Fall/SIG Paper/Analysis")
+library(tidyverse)
+
+dime <- read.csv("dime_1014.csv") # 1980-2014
+recp <- read.csv("dime_recipients_1979_2014.csv") # 1979-2014
+
+# convert to dates
+dime$date <- as.Date(dime$date)
+
+# subset to 1999-01-01 ~ 2014-12-12 (since disaster has data til then)
+dime <- subset(dime, cycle >= 2000) # 2000-2014
+recp <- recp %>% filter(cycle >= 2000)
+
+# clean recp
+recp <- subset(recp, select=c(election, cycle, fecyear, Cand.ID, bonica.rid, 
+                              bonica.cid, name, lname, ffname, fname, party, 
+                              state, seat, district, Incum.Chall, recipient.cfscore, 
+                              cand.gender, total.disbursements, contribs.from.candidate, 
+                              unitemized, total.receipts, total.indiv.contrib, 
+                              ran.primary, ran.general, p.elec.stat, gen.elec.stat, 
+                              gen.elect.pct, recipient.type))
+#recp <- subset(recp, seat=="federal:house")
+# district is recipient district
+
+# clean dime
+dime$d1 <- ifelse(dime$cycle %in% c(2000, 2002, 2004, 2006, 2008), dime$contributor_district_00s, NA)
+dime$d2 <- ifelse(dime$cycle %in% c(2010, 2012, 2014), dime$contributor_district_10s, NA)
+dime$con_district <- coalesce(dime$d1, dime$d2)
+# con_district is contributor district
+
+# merge dime+recp
+names(recp)[names(recp) == "bonica.rid"] <- "bonica_rid"
+join <- left_join(dime, recp, by=c('cycle', 'bonica_rid'))
+join <- join %>% filter(seat.y=="federal:house")
+join <- join %>% select(cycle, amount, date, bonica_cid, contributor_type, contributor_gender, 
+                        contributor_city, contributor_state, contributor_zipcode, recipient_name,
+                        bonica_rid, recipient_party, recipient_type, recipient_state, seat.x,
+                        election_type, contributor_cfscore, candidate_cfscore, 
+                        con_district, election, fecyear, Cand.ID, 
+                        name, lname,fname, party, district, Incum.Chall, recipient.cfscore,
+                        cand.gender, total.disbursements, unitemized, total.receipts,
+                        total.indiv.contrib, ran.primary, ran.general, p.elec.stat, gen.elec.stat, 
+                        gen.elect.pct, recipient.type)
+
+write.csv(join, "donation.csv")
+
+# check if merged right
+# seems to be basically the same
+score <- subset(join, select=c(candidate_cfscore, recipient.cfscore))
+score$r.cf <- round(score$recipient.cfscore, digits=2)
+score$same <- ifelse(score$candidate_cfscore == score$r.cf, TRUE, FALSE)
+table(score$same)
+false <- subset(score, same==FALSE)
+false$dif <- false$candidate_cfscore - false$r.cf
+table(false$dif) # difference mostly minuscule. but 725 obs difference 0.27
+```
+
+combine dime with disaster data (made from mapping.rmd)
+```{r}
+# recipient and contributor data is merged as donation.csv
+donation <- read.csv("donation.csv")
+disaster <- read.csv("cd.join.csv")
+
+# maybe i wanted to extract year from primary date data and put into disaster
+# pri <- read.csv("primarydates.csv")
+# pri$pri.date <- as.Date(pri$date, "%m/%d/%Y")
+# pri <- subset(pri, election_year <= 2014)
+# disaster$pri.date.x <- as.Date(disaster$pri.date.x)
+# # disaster <- left_join(disaster, pri %>% dplyr::select(pri.date, election_year),
+# #                       by=c("year"="election_year", "pri.date.x"="pri.date"))
+
+# congress: term: election year (where to look)
+# 107: 01-03 : 00 (data between 99-01-01 ~ 00-primary-dd)
+# 108: 03-05 : 02 (data between 01-01-01 ~ 02-primary-dd)
+# 109: 05-07 : 04  (data between 03-01-01 ~ 04-primary-dd)
+# 110: 07-09 : 06  (data between 05-01-01 ~ 06-primary-dd)
+# 111: 09-11 : 08  (data between 07-01-01 ~ 08-primary-dd)
+# 112: 11-13 : 10 (data between 09-01-01 ~ 10-primary-dd)
+# 113: 13-15 : 12 (data between 11-01-01 ~ 12-primary-dd) 
+# 114: 15-17 : 14 (data between 13-01-01 ~ 14-primary-dd)
+
+data <- left_join(donation, disaster %>% dplyr::select(cong, year, pri.date.x,
+                                                       treat, declarationDate, close), 
+                  by=c("district"="cong", "cycle"="year"))
+
+write.csv(data, "data.csv")
+```
+
+
+0. how do natural disasters affect donor composition?
+$$
+\%.of.within = disaster_{it} + \gamma_i + \eta_t + \epsilon
+$$
+```{r}
+data <- read.csv("data.csv")
+
+# district
+data$same <- ifelse(data$district==data$con_district, 1, 0)
+
+cand <- data %>% group_by(district, cycle) %>% dplyr::summarize(count=n(), ind=sum(same==1), out=sum(same==0), ind_cont = sum(amount[same==1]), out_cont = sum(amount[same==0]), disaster = max(treat, na.rm=F))
+
+cand$out.num <- cand$out/(cand$ind+cand$out)
+cand$out.amount <- cand$out_cont/(cand$ind_cont+cand$out_cont)
+
+summary(lm(rat_out ~ disaster + factor(district) + factor(cycle), data=cand))
+
+summary(lm(ind ~ disaster + factor(district)+factor(cycle), cand))
+summary(lm(ind_cont ~ disaster + factor(district)+factor(cycle), cand))
+
+summary(lm(out ~ disaster + factor(district)+factor(cycle), cand))
+summary(lm(out_cont ~ disaster + factor(district)+factor(cycle), cand))
+
+
+# state
+data$same.st <- ifelse(data$contributor_state==data$recipient_state, 1, 0)
+
+cand.st <- data %>% group_by(district, cycle) %>% dplyr::summarize(count=n(), ind=sum(same.st==1), out=sum(same.st==0), ind_cont = sum(amount[same.st==1]), out_cont = sum(amount[same.st==0]), disaster = max(treat, na.rm=F))
+
+cand.st$out.num <- cand.st$out/(cand.st$ind+cand.st$out)
+cand.st$out.amount <- cand.st$out_cont/(cand.st$ind_cont+cand.st$out_cont)
+
+summary(lm(out.num ~ disaster + factor(district)+factor(cycle), cand.st))
+summary(lm(out.amount ~ disaster + factor(district)+factor(cycle), cand.st))
+
+
+data %>% group_by(district, cycle, bonica_rid) %>% count()
+
+
+```
+
+
+1. district-cycle-party level
+
+The effect of natural disaster on winning ideology
+
+$$
+W.Ideology_{itp} = \alpha + \beta_1 Disaster_{it} + \gamma_i + \eta_t + \delta_p + \epsilon_{itp}
+$$
+
+district $i$, election cycle $t$, party $p$. $\gamma_i$ is district fixed effect, $\eta_t$ is election cycle fixed effect, $\delta_p$ is party fixed effect
+
+The heterogenous effect of timing
+
+$$
+W.Ideology_{itp} = \alpha + \beta_1 Disaster_{it} + \beta_2 Timing_{itp} + \beta_3 Disaster_{it} * Timing_{itp} + \gamma_i + \eta_t + \delta_p + \epsilon_{itp}
+$$
+
+2. individual candidate level
+
+How natural disasters affect total contributions (and whether this effect varies by the ideology of candidates)
+
+$$
+total.amount = \beta_1 Disaster + \beta_2 Ideology + \beta_3 Disaster * Ideology 
+$$
+
+How natural disasters affect contribution from out of district donors (and whether this effect varies by the ideology of candidates)
+
+$$
+out.of.district.donation = \gamma_1 Disaster + \gamma_2 Ideology + gamma_3 Disaster * Ideology
+$$
+
+
+
+Some mapping trials from here
+The one I ended up using is in mapping.Rmd file. these are some attempts trying to map counties to congressional districts using shapefiles but did not work out well
+
+mapping trial 1 (using USAboundaries)
+```{r}
+library(USAboundaries)
+library(sf)
+library(lwgeom)
+library(ggmap)
+# match counties to congressional districts: fema
+# note. USAboundaries only has cd115 districts
+fema <- subset(fema, declare.date >= "1994-01-01") # from 1994
+# placecode in fema is 999+countycode
+fema$countycode <- as.numeric(str_sub(fema$placeCode, 3))
+
+# map counties to congressional districts
+union_sf <- us_counties(resolution = 'high')
+union_congress_sf <- us_congressional(resolution = "low")
+union_sf <- union_sf %>% dplyr::select(name, geometry, countyfp)
+union_congress_sf <- union_congress_sf %>% dplyr::select(geoid, state_name, geometry, cd115fp, state_abbr)
+cong_join <- st_join(union_sf, union_congress_sf, largest = TRUE)
+
+# make congressional district code similar to that of dime
+cong_join$congress <- paste0(cong_join$state_abbr, cong_join$cd115fp)
+cong_join$countyfp <- as.numeric(cong_join$countyfp)
+
+# map counties in fema to congressional districts
+fema_map <- left_join(fema, cong_join %>% dplyr::select(countyfp, state_abbr, congress), 
+                      by = c("countycode" = "countyfp", "stateCode" = "state_abbr"))
+fema_map <- subset(fema_map, select=c(programTypeCode, placeName, 
+                                      declare.date, countycode, congress, geometry))
+```
+
+mapping trial 2 (using tigris)
+```{r}
+# statefp to state names
+library(usdata)
+library(tigris)
+fips <- read.csv("state-geocodes-v2016.csv")
+fips <- fips %>% rename(Region = Census.Bureau.Region.and.Division.Codes.and.Federal.Information.Processing.System..FIPS..Codes.for.States, 
+                        Division = X,
+                        FIPS = X.1, 
+                        Name = X.2)
+fips <- fips[-c(1,2,3,4,5,6,7,14,18,19,25,33,34,44,49,54,55,64),]
+fips$abb <- state2abbr(fips$Name)
+
+# 113 = year 2013
+cong113 <- congressional_districts(year=2013)
+coun113 <- counties(year=2013)
+
+cong113 <- subset(cong113, select=c(STATEFP, CD113FP, GEOID, geometry))
+cong113 <- left_join(cong113, fips %>% dplyr::select(FIPS, Name, abb),
+                     by=c("STATEFP"="FIPS"))
+coun113 <- subset(coun113, select=c(STATEFP, COUNTYFP, GEOID, NAME, geometry))
+join113 <- st_join(coun113, cong113, largest=TRUE)
+
+join113$district <- paste0(join113$abb, join113$CD113FP)
+join113$cdyear <- 113 
+join113$year <- "2013-01-01"
+
+# 112 = year 2011
+cong112 <- congressional_districts(year=2011)
+coun112 <- counties(year=2011)
+
+cong112 <- subset(cong112, select=c(STATEFP, CD112FP, GEOID, geometry))
+cong112 <- left_join(cong112, fips %>% dplyr::select(FIPS, Name, abb),
+                     by=c("STATEFP"="FIPS"))
+coun112 <- subset(coun112, select=c(STATEFP, COUNTYFP, GEOID, NAME, geometry))
+join112 <- st_join(coun112, cong112, largest=TRUE)
+
+join112$district <- paste0(join112$abb, join112$CD112FP)
+join112$cdyear <- 112
+join112$year <- "2011-01-01"
+
+# COUNTYFP in tigris is same as countycode (placecode-99) in fema
+# abb in tigris same as stateCode in fema
+# match to fema based on declaration date!
+
+# tigris has later than 2010 (for both)
+# usaboundaries has 2016 and 1783-2000 county districts
+# ucla has congressional districts
+```
+
+
+Mapping trial 3 (using ucla, census)
+```{r}
+# use ucla and census data
+
+# ucla
+# call district boundaries for the congressional districts from a specific congress
+get_congress_map <- function(cong=113) {
+  tmp_file <- tempfile()
+  tmp_dir  <- tempdir()
+  zp <- sprintf("http://cdmaps.polisci.ucla.edu/shp/districts%03i.zip",cong)
+  download.file(zp, tmp_file)
+  unzip(zipfile = tmp_file, exdir = tmp_dir)
+  fpath <- paste(tmp_dir, sprintf("districtShapes/districts%03i.shp",cong), sep = "/")
+  st_read(fpath)
+}
+
+# counties from census
+cnty2010 <- st_read("gz_2010_us_050_00_500k.shp")
+cnty2000 <- st_read("co99_d00.shp")
+cnty2000 <- cnty2000 %>% st_set_crs("NAD83")
+cnty1990 <- st_read("co99_d90.shp")
+cnty1990 <- cnty1990 %>% st_set_crs("NAD83")
+
+# districts from ucla
+cd113 <- get_congress_map(113) #2013 # nad83
+cd113 <- cd113 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd112 <- get_congress_map(112) #2011
+cd112 <- st_transform(cd112, st_crs(cnty2010))
+cd112 <- cd112 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd111 <- get_congress_map(111) #2009
+cd111 <- st_transform(cd111, st_crs(cnty2010))
+cd111 <- cd111 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd110 <- get_congress_map(110) #2007
+cd110 <- st_transform(cd110, st_crs(cnty2010))
+cd110 <- cd110 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd109 <- get_congress_map(109) #2005
+cd109 <- st_transform(cd109, st_crs(cnty2010))
+cd109 <- cd109 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd108 <- get_congress_map(108) #2003
+cd108 <- st_transform(cd108, st_crs(cnty2010))
+cd108 <- cd108 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd107 <- get_congress_map(107) #2001
+cd107 <- st_transform(cd107, st_crs(cnty2010))
+cd107 <- cd107 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd106 <- get_congress_map(106) #1999
+cd106 <- st_transform(cd106, st_crs(cnty2010))
+cd106 <- cd106 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd105 <- get_congress_map(105) #1997
+cd105 <- st_transform(cd105, st_crs(cnty2010))
+cd105 <- cd105 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd104 <- get_congress_map(104) #1995
+cd104 <- st_transform(cd104, st_crs(cnty2010))
+cd104 <- cd104 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+cd103 <- get_congress_map(103) #1993 # nad83
+cd103 <- cd103 %>% dplyr::select(STATENAME, ID, DISTRICT, STARTCONG, geometry)
+
+
+# map county to district 
+join113 <- st_join(cnty2010, st_make_valid(cd113), largest=TRUE)
+join113$abb <- state2abbr(join113$STATENAME)
+join113$dis <- sprintf("%02d", as.numeric(join113$DISTRICT))
+join113$con_district <- paste0(join113$abb, join113$dis)
+join113$year <- "2013-01-01"
+join113 <- subset(join113, select=c(COUNTY, NAME, con_district, year))
+
+join112 <- st_join(cnty2010, st_make_valid(cd112), largest=TRUE)
+join112$abb <- state2abbr(join112$STATENAME)
+join112$dis <- sprintf("%02d", as.numeric(join112$DISTRICT))
+join112$con_district <- paste0(join112$abb, join112$dis)
+join112$year <- "2011-01-01"
+join112 <- subset(join112, select=c(COUNTY, NAME, con_district, year))
+
+join111 <- st_join(cnty2000, st_make_valid(cd111), largest = TRUE) 
+join111$abb <- state2abbr(join111$STATENAME)
+join111$dis <- sprintf("%02d", as.numeric(join111$DISTRICT))
+join111$con_district <- paste0(join111$abb, join111$dis)
+join111$year <- "2009-01-01"
+join111 <- subset(join111, select=c(COUNTY, NAME,  con_district, year))
+
+join110 <- st_join(cnty2000, st_make_valid(cd110), largest = TRUE) 
+join110$abb <- state2abbr(join110$STATENAME)
+join110$dis <- sprintf("%02d", as.numeric(join110$DISTRICT))
+join110$con_district <- paste0(join110$abb, join110$dis)
+join110$year <- "2007-01-01"
+join110 <- subset(join110, select=c(COUNTY, NAME, con_district, year))
+
+join109 <- st_join(cnty2000, st_make_valid(cd109), largest = TRUE) 
+join109$abb <- state2abbr(join109$STATENAME)
+join109$dis <- sprintf("%02d", as.numeric(join109$DISTRICT))
+join109$con_district <- paste0(join109$abb, join109$dis)
+join109$year <- "2005-01-01"
+join109 <- subset(join109, select=c(COUNTY, NAME, con_district, year))
+
+join108 <- st_join(cnty2000, st_make_valid(cd108), largest = TRUE) 
+join108$abb <- state2abbr(join108$STATENAME)
+join108$dis <- sprintf("%02d", as.numeric(join108$DISTRICT))
+join108$con_district <- paste0(join108$abb, join108$dis)
+join108$year <- "2003-01-01"
+join108 <- subset(join108, select=c(COUNTY, NAME, con_district, year))
+
+join107 <- st_join(cnty2000, st_make_valid(cd107), largest = TRUE) 
+join107$abb <- state2abbr(join107$STATENAME)
+join107$dis <- sprintf("%02d", as.numeric(join107$DISTRICT))
+join107$con_district <- paste0(join107$abb, join107$dis)
+join107$year <- "2001-01-01"
+join107 <- subset(join107, select=c(COUNTY, NAME, con_district, year))
+
+join106 <- st_join(cnty1990, st_make_valid(cd106), largest = TRUE) 
+join106$abb <- state2abbr(join106$STATENAME)
+join106$dis <- sprintf("%02d", as.numeric(join106$DISTRICT))
+join106$con_district <- paste0(join106$abb, join106$dis)
+join106$year <- "1999-01-01"
+join106 <- subset(join106, select=c(CO, NAME, con_district, year))
+join106$COUNTY <- join106$CO
+join106 = select(join106, -1)
+
+join105 <- st_join(cnty1990, st_make_valid(cd105), largest = TRUE) 
+join105$abb <- state2abbr(join105$STATENAME)
+join105$dis <- sprintf("%02d", as.numeric(join105$DISTRICT))
+join105$con_district <- paste0(join105$abb, join105$dis)
+join105$year <- "1997-01-01"
+join105 <- subset(join105, select=c(CO, NAME, con_district, year))
+join105$COUNTY <- join105$CO
+join105 = select(join105, -1)
+
+join104 <- st_join(cnty1990, st_make_valid(cd104), largest = TRUE) 
+join104$abb <- state2abbr(join104$STATENAME)
+join104$dis <- sprintf("%02d", as.numeric(join104$DISTRICT))
+join104$con_district <- paste0(join104$abb, join104$dis)
+join104$year <- "1995-01-01"
+join104 <- subset(join104, select=c(CO, NAME, con_district, year))
+join104$COUNTY <- join104$CO
+join104 = select(join104, -1)
+
+join103 <- st_join(cnty1990, st_make_valid(cd103), largest = TRUE) 
+join103$abb <- state2abbr(join103$STATENAME)
+join103$dis <- sprintf("%02d", as.numeric(join103$DISTRICT))
+join103$con_district <- paste0(join103$abb, join103$dis)
+join103$year <- "1993-01-01"
+join103 <- subset(join103, select=c(CO, NAME, con_district, year))
+join103$COUNTY <- join103$CO
+join103 = select(join103, -1)
+
+cnty.district <- rbind(join103, join104, join105, join106, join107, join108, join109, 
+                       join110, join111, join112, join113)
+
+# save as
+st_write(cnty.district, "cnty.district.shp", driver="ESRI Shapefile")
+```
+
+Mapping counties to districts in fema (by congressional district years)
+```{r}
+cnty.district <- st_read("cnty.district.shp")
+cnty.district$abbr <- substr(cnty.district$cn_dstr, 1, 2)
+cnty.district <- cnty.district %>% as_tibble(.) %>% select(-geometry)
+
+# 103
+fema$cnty.district[fema$declare.date >= "1993-01-01" & 
+                     fema$declare.date < "1995-01-01"] <- "1993-01-01"
+# 104
+fema$cnty.district[fema$declare.date >= "1995-01-01" & 
+                     fema$declare.date < "1997-01-01"] <- "1995-01-01"
+# 105
+fema$cnty.district[fema$declare.date >= "1997-01-01" & 
+                     fema$declare.date < "1999-01-01"] <- "1997-01-01"
+# 106
+fema$cnty.district[fema$declare.date >= "1999-01-01" & 
+                     fema$declare.date < "2001-01-01"] <- "1999-01-01"
+# 107
+fema$cnty.district[fema$declare.date >= "2001-01-01" & 
+                     fema$declare.date < "2003-01-01"] <- "2001-01-01"
+# 108
+fema$cnty.district[fema$declare.date >= "2003-01-01" & 
+                     fema$declare.date < "2005-01-01"] <- "2003-01-01"
+# 109
+fema$cnty.district[fema$declare.date >= "2005-01-01" & 
+                     fema$declare.date < "2007-01-01"] <- "2005-01-01"
+# 110
+fema$cnty.district[fema$declare.date >= "2007-01-01" & 
+                     fema$declare.date < "2009-01-01"] <- "2007-01-01"
+# 111
+fema$cnty.district[fema$declare.date >= "2009-01-01" & 
+                     fema$declare.date < "2011-01-01"] <- "2009-01-01"
+# 112
+fema$cnty.district[fema$declare.date >= "2011-01-01" & 
+                     fema$declare.date < "2013-01-01"] <- "2011-01-01"
+# 113
+fema$cnty.district[fema$declare.date >= "2013-01-01" & 
+                     fema$declare.date < "2015-01-01"] <- "2013-01-01"
+
+# map counties in fema to congressional districts
+fema <- subset(fema, declare.date < as.Date("2016-01-01"))
+fema$countycode <- as.character(fema$countycode)
+fema_map <- left_join(fema, cnty.district %>% dplyr::select(NAME, cn_dstr, year, COUNTY, abbr), 
+                      by = c("countycode" = "COUNTY", "stateCode" = "abbr",
+                             "cnty.district" = "year"))
+
+fema_map <- subset(fema_map, select=c(programTypeCode, placeName, 
+                                      declare.date, countycode, congress, geometry))
+
+
+```
+
+
