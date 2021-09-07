@@ -1,0 +1,206 @@
+---
+title: "disaster"
+author: "Heewon Yoon"
+date: "9/2/2021"
+output: html_document
+---
+
+goal: combine fema, emdat (with severity) and map county level to congressional based on census data: shows whether there was disaster before election or not in a congressional district in that year (from election 00 to 14)
+
+main datasets of use:
+fema
+emdat
+census
+primary date
+
+from US Census website:
+Congressional districts for the 108th through 112th sessions were established by the states based on the result of the 2000 Census. Congressional districts for the 113th through 116th sessions were established by the states based on the result of the 2010 Census. Boundaries are effective until January of odd number years (for example, January 2015, January 2017, etc.), unless a state initiative or court ordered redistricting requires a change. All states established new congressional districts in 2011-2012, with the exception of the seven single member states (Alaska, Delaware, Montana, North Dakota, South Dakota, Vermont, and Wyoming)
+
+The congressional district boundaries are the same for the 112th, 111th, 110th and 109th Congress of the United States except for Georgia and Texas which changed between the 109th and 110th Congresses. New maps for the 110th Congress (2007-2009) were created only for the states with congressional district boundary changes.
+
+--> based on these information it seems evident that 109-112 is using the same boundaries except for Georgia and Texas on 110th
+--> 109-112 (2000 census), 113-116 (2010 census)
+--> with 109-112 everything same except for GA and TX 109 v. 110-112
+
+|       | election year | year | term                    |           | boundaries  | natl code |
+|-------|---------------|------|-------------------------|-----------|-------------|-----------|
+| cd108 | Nov 5 2002    | 2002 | Jan 3 2003 - Jan 3 2005 | 2003-2004 | 2000 census | X         |
+| cd109 | Nov 2 2004    | 2004 | Jan 3 2005 - Jan 3 2007 | 2005-2006 | 2000 census | O         |
+| cd110 | Nov 7 2006    | 2006 | Jan 3 2007 - Jan 3 2009 | 2007-2008 | 2000 census | O         |
+| cd111 | Nov 4 2008    | 2008 | Jan 3 2009 - Jan 3 2011 | 2009-2010 | 2000 census | X         |
+| cd112 | Nov 2 2010    | 2010 | Jan 3 2011 - Jan 3 2013 | 2011-2012 | 2000 census | X         |
+| cd113 | Nov 6 2012    | 2012 | Jan 3 2013 - Jan 3 2015 | 2013-2014 | 2010 census | O         |
+| cd114 | Nov 4 2014    | 2014 | Jan 3 2015 - Jan 3 2017 | 2015-2016 | 2010 census | X         |
+| cd115 | Nov 8 2016    | 2016 | Jan 3 2017 - Jan 3 2019 | 2017-2018 | 2010 census | X         |
+| cd116 | Nov 6 2018    | 2018 | Jan 3 2019 - Jan 3 2021 | 2019-2020 | 2010 census | O         |
+
+concerns:
+- in fema dataset, congressional districts are allocated using GIS. but is this up to date to congressional district changes?
+
+possibility:
+assign district using GIS for all?
+
+
+mapping counties to districts
+```{r}
+setwd("~/Desktop/Yoon/7. 2021Fall/Dissertation Prosepctus/moneypaper")
+
+library(usdata) # to use abbr function
+library(tidyverse)
+
+# fips
+fips <- read.csv("state-geocodes-v2016.csv")
+
+fips <- fips %>% rename(Region = Census.Bureau.Region.and.Division.Codes.and.Federal.Information.Processing.System..FIPS..Codes.for.States, 
+                        Division = X,
+                        FIPS = X.1, 
+                        Name = X.2)
+fips <- fips[-c(1,2,3,4,5),] # remove unnecessary description columns
+fips$FIPS <- as.numeric(fips$FIPS)
+fips <- fips %>% filter(FIPS >= 1) # include only 51 states
+
+fips$abb <- state2abbr(fips$Name)
+
+fips <- fips %>% arrange(FIPS)
+
+# congressional district by county (from census)
+clean_df <- function(file) {
+  x <- read.delim(file, sep=",", header=F) %>% 
+        rename(state = V1,
+               county = V2,
+               district = V3) %>% 
+         slice(-1:-2) %>% mutate(state=as.numeric(state))
+}
+
+cd109 <- clean_df("cou_cd109_natl.txt") # 51 states, census 00
+cd110 <- clean_df("cou_cd110_natl.txt") # 51 states, census 00
+cd113 <- clean_df("natl_cocd_delim13.txt") # 43 states, census 10
+cd116 <- clean_df("natl_cocd_delim16.txt") # 43 states, census 10
+# single member states: Alaska, Delaware, Montana, North Dakota, South Dakota, Vermont, and Wyoming
+
+# what are the differences?
+anti_join(cd109, cd110) # shows difference in GA, TX
+anti_join(cd113, cd116,  by = c("state", "county", "district")) # difference in DC, NC, VA
+
+# cd109: 108~109
+# cd110: 110~112
+# cd113: 113~116
+
+join <- function(dat){
+ dat = left_join(dat, fips %>% dplyr::select(FIPS, abb), by=c("state"="FIPS"))
+ dat$cong <- paste0(dat$abb, dat$district)
+ return(dat)
+}
+
+cd109 <- join(cd109)
+cd110 <- join(cd110)
+cd113 <- join(cd113)
+cd116 <- join(cd116)
+```
+
+
+constructing disaster data
+````{r}
+fema <- read.csv("FemaWebDeclarationAreas.csv") 
+fema <- fema %>% select(disasterNumber, programTypeCode, programTypeDescription, 
+                        stateCode, placeCode, placeName, designatedDate)
+
+# convert to dates
+fema$designatedDate <- as.Date(substr(fema$designatedDate, 1, 10))
+
+# change errors
+fema$designatedDate <- replace(fema$designatedDate, fema$designatedDate == "2120-08-30", "2012-08-30")
+fema$designatedDate <- replace(fema$designatedDate, fema$designatedDate == "2904-09-29", "2012-09-29")
+fema$designatedDate <- replace(fema$designatedDate, fema$designatedDate == "7004-06-17", "2004-06-17")
+fema$designatedDate <- replace(fema$designatedDate, fema$designatedDate == "8004-06-17", "2004-06-17")
+fema$designatedDate <- replace(fema$designatedDate, fema$designatedDate == "9004-09-29", "2004-09-29")
+
+# county code: placecode in fema is 999+countycode
+fema$countycode <- as.numeric(str_sub(fema$placeCode, 3))
+fema$countycode <- sprintf("%03d", as.numeric(fema$countycode))
+
+
+# fema_declaration # add this for more info on disasters
+fema_dec <- read.csv("FemaWebDisasterDeclarations.csv")
+fema_dec <- fema_dec %>% select(disasterNumber, declarationDate, disasterName, 
+                                incidentBeginDate, incidentEndDate, declarationType,
+                                stateCode, incidentType)
+
+# extract only dates
+fema_dec$declarationDate <- as.Date(substr(fema_dec$declarationDate, 1, 10))
+fema_dec$incidentBeginDate <- as.Date(substr(fema_dec$incidentBeginDate, 1, 10))
+fema_dec$incidentEndDate <- as.Date(substr(fema_dec$incidentEndDate, 1, 10))
+
+
+# join fema and fema_dec
+fema_join <- left_join(fema, fema_dec, by=c("disasterNumber"="disasterNumber"))
+# fema is county level, fema_dec is disaster level
+# fema: The date a disaster was officially designated (designatedDate)
+# fema_dec: The date the disaster was declared (declarationDate)
+
+fema_join <- fema_join %>% filter(declarationType == "Major Disaster") %>%
+  select(disasterNumber, programTypeCode, stateCode.x, countycode, placeName, 
+         disasterName, designatedDate, declarationDate, incidentBeginDate, incidentEndDate,
+         declarationType, incidentType)
+
+fema_join <- distinct(fema_join) # remove duplicates
+
+# after 2000s
+fema_join <- fema_join %>% filter(declarationDate >= "2000-01-01")
+
+# emdat for more info
+emdat <- read.csv("emdat_public_trial.csv", na.strings=c("", "NA"))
+emdat <-  emdat %>% filter(Country == "United States of America (the)") 
+
+
+library(data.table) # or reshape2
+emdat <- melt(emdat, id.vars=c("Dis.No", "Year", "Seq", "Disaster.Group", "Disaster.Subgroup", 
+                            "Disaster.Type", "Disaster.Subtype", "Disaster.Subsubtype",
+                            "Event.Name",  "Entry.Criteria", "Country", "ISO", "Region", 
+                            "Continent", "X", "Origin", "Associated.Dis", "Associated.Dis2", 
+                            "OFDA.Response", "Appeal", "Declaration", "Aid.Contribution",
+                            "Dis.Mag.Value", "Dis.Mag.Scale", "Latitude", "Longitude", 
+                            "Local.Time", "River.Basin", "Start.Year", "Start.Month", 
+                            "Start.Day", "End.Year", "End.Month", "End.Day", "Total.Deaths", 
+                            "No.Injured", "No.Affected", "No.Homeless", "Total.Affected", 
+                            "Reconstruction.Costs...000.US..", "Insured.Damages...000.US..", 
+                            "Total.Damages...000.US..", "CPI"))
+emdat <- emdat %>% drop_na("value")
+
+library(usdata)
+emdat$abb <- state2abbr(emdat$value)
+emdat <- emdat %>% select(Year, Seq, Disaster.Subgroup, Disaster.Type, Disaster.Subtype, Event.Name,
+                          Entry.Criteria, Declaration, Total.Deaths, No.Injured, 
+                          No.Affected, Total.Affected, Total.Damages...000.US.., abb,
+                          Start.Year, Start.Month, Start.Day, End.Year, End.Month, End.Day)
+
+# after 2000s
+emdat <- emdat %>% filter(Start.Year >= 2000)
+
+
+## join fema_and emdat_clear
+
+fema_join$year <- as.integer(substr(fema_join$incidentBeginDate, start=1, stop=4))
+fema_join$month <- as.integer(substr(fema_join$incidentBeginDate, start=6, stop=7))
+
+
+# join fema and emdat
+disaster <- left_join(fema_join, emdat, by=c("stateCode.x"="abb", 
+                                        "year"="Start.Year",
+                                        "month"="Start.Month"))
+
+# only include intersections (disasters that exists in both)
+disaster <- disaster %>% drop_na("Seq")
+
+
+# save
+write.csv(disaster, "disaster.csv")
+```
+
+assigning counties to disasters
+```{r}
+
+
+```
+
+
