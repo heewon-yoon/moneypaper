@@ -7,7 +7,6 @@ output: html_document
 
 Bring from RSQL
 ```{r}
-dime$cycle[dime$bonica_rid=="cand880"]
 ### subset data using RSQL ####
 
 conn <- dbConnect(RSQLite::SQLite(), "dime.sqlite3")
@@ -25,6 +24,7 @@ dime <- dbGetQuery(conn, "SELECT cycle, transaction_id, amount, date, bonica_cid
            contributor_district_00s, contributor_district_10s, contributor_cfscore, 
            candidate_cfscore FROM contribDB WHERE contributor_type = 'I' AND recipient_type = 'cand' 
                     AND seat = 'federal:house' AND election_type = 'P'")
+##### add latitude and longitude???
 
 # save subsetted data
 write.csv(dime, "dime_1014.csv")
@@ -32,7 +32,7 @@ write.csv(dime, "dime_1014.csv")
 
 Data Cleaning
 ```{r}
-setwd("~/Desktop/Yoon/5. 2020Fall/SIG Paper/Analysis")
+setwd("~/Desktop/Yoon/7. 2021Fall/Dissertation Prosepctus/moneypaper")
 library(tidyverse)
 
 dime <- read.csv("dime_1014.csv") # 1980-2014
@@ -42,8 +42,8 @@ recp <- read.csv("dime_recipients_1979_2014.csv") # 1979-2014
 dime$date <- as.Date(dime$date)
 
 # subset to 1999-01-01 ~ 2014-12-12 (since disaster has data til then)
-dime <- subset(dime, cycle >= 2000) # 2000-2014
-recp <- recp %>% filter(cycle >= 2000)
+dime <- dime %>% filter(cycle >= 2000) # 2000-2014
+recp <- recp %>% filter(cycle >= 2000) # election? cycle? fecyear?
 
 # clean recp
 recp <- subset(recp, select=c(election, cycle, fecyear, Cand.ID, bonica.rid, 
@@ -53,24 +53,27 @@ recp <- subset(recp, select=c(election, cycle, fecyear, Cand.ID, bonica.rid,
                               unitemized, total.receipts, total.indiv.contrib, 
                               ran.primary, ran.general, p.elec.stat, gen.elec.stat, 
                               gen.elect.pct, recipient.type))
-#recp <- subset(recp, seat=="federal:house")
+recp <- recp %>% filter(seat=="federal:house")
 # district is recipient district
 
 # clean dime
-dime$d1 <- ifelse(dime$cycle %in% c(2000, 2002, 2004, 2006, 2008), dime$contributor_district_00s, NA)
-dime$d2 <- ifelse(dime$cycle %in% c(2010, 2012, 2014), dime$contributor_district_10s, NA)
-dime$con_district <- coalesce(dime$d1, dime$d2)
+# district 90s: 1992-2000
+# district 00s: 2002-2010
+# district 10s: 2012-2020
+dime$d1 <- ifelse(dime$cycle == 2000, dime$contributor_district_90s, NA)
+dime$d2 <- ifelse(dime$cycle %in% c(2002, 2004, 2006, 2008, 2010), dime$contributor_district_00s, NA)
+dime$d3 <- ifelse(dime$cycle %in% c(2012, 2014), dime$contributor_district_10s, NA)
+dime$con_district <- coalesce(dime$d1, dime$d2, dime$d3)
 # con_district is contributor district
 
 # merge dime+recp
 names(recp)[names(recp) == "bonica.rid"] <- "bonica_rid"
 join <- left_join(dime, recp, by=c('cycle', 'bonica_rid'))
-join <- join %>% filter(seat.y=="federal:house")
 join <- join %>% select(cycle, amount, date, bonica_cid, contributor_type, contributor_gender, 
                         contributor_city, contributor_state, contributor_zipcode, recipient_name,
-                        bonica_rid, recipient_party, recipient_type, recipient_state, seat.x,
+                        bonica_rid, recipient_party, recipient_type, recipient_state,
                         election_type, contributor_cfscore, candidate_cfscore, 
-                        con_district, election, fecyear, Cand.ID, 
+                        con_district, election, fecyear, Cand.ID, bonica.cid,
                         name, lname,fname, party, district, Incum.Chall, recipient.cfscore,
                         cand.gender, total.disbursements, unitemized, total.receipts,
                         total.indiv.contrib, ran.primary, ran.general, p.elec.stat, gen.elec.stat, 
@@ -80,16 +83,57 @@ write.csv(join, "donation.csv")
 
 # check if merged right
 # seems to be basically the same
+# candidate cf score
 score <- subset(join, select=c(candidate_cfscore, recipient.cfscore))
 score$r.cf <- round(score$recipient.cfscore, digits=2)
 score$same <- ifelse(score$candidate_cfscore == score$r.cf, TRUE, FALSE)
 table(score$same)
 false <- subset(score, same==FALSE)
 false$dif <- false$candidate_cfscore - false$r.cf
-table(false$dif) # difference mostly minuscule. but 725 obs difference 0.27
+table(false$dif) # difference mostly minuscule. but 213 obs difference 0.27
+
+# state
+a$con <- substr(a$con_district, 1, 2)
+a$con <- tolower(a$con)
+a$same <- ifelse(a$contributor_state == a$con, TRUE, FALSE)
+table(a$same) # difference only 0.008 (less than 1 percent)
 ```
 
+
+
+0. effect of nd on donor composition (cycle-district level)
+```{r}
+donation <- read.csv("donation.csv")
+# donation.csv is contributor level
+donation <- donation %>% select(-c(X, contributor_gender, contributor_city, contributor_zipcode,
+                                   election_type, lname, fname, cand.gender, ran.primary, ran.general, recipient.type))
+donation$recipient_state <- toupper(donation$recipient_state)
+
+donation$same <- ifelse(donation$district == donation$con_district, 1, 0)
+
+comp <- donation %>% group_by(district, cycle) %>%
+  summarize(count = n(),
+            ind = sum(same==1),
+            outd = sum(same==0),
+            ind_cont = sum(amount[same==1]),
+            outd_cont = sum(amount[same==0]))
+
+comp$out.pct <- comp$outd/comp$count
+comp$out.amt.pct <- comp$outd_cont/(comp$outd_cont + comp$ind_cont)
+
+
+
+
+
+```
+
+
+
+
+
+
 combine dime with disaster data (made from mapping.rmd)
+can start from using "donation.csv" dataset
 ```{r}
 # recipient and contributor data is merged as donation.csv
 donation <- read.csv("donation.csv")
@@ -162,7 +206,6 @@ data %>% group_by(district, cycle, bonica_rid) %>% count()
 
 ```
 
-
 1. district-cycle-party level
 
 The effect of natural disaster on winning ideology
@@ -192,6 +235,11 @@ How natural disasters affect contribution from out of district donors (and wheth
 $$
 out.of.district.donation = \gamma_1 Disaster + \gamma_2 Ideology + gamma_3 Disaster * Ideology
 $$
+
+
+
+
+
 
 
 
