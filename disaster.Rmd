@@ -22,17 +22,17 @@ The congressional district boundaries are the same for the 112th, 111th, 110th a
 --> 109-112 (2000 census), 113-116 (2010 census)
 --> with 109-112 everything same except for GA and TX 109 v. 110-112
 
-|       | election year | year | term                    |           | boundaries  | natl code |
-|-------|---------------|------|-------------------------|-----------|-------------|-----------|
-| cd108 | Nov 5 2002    | 2002 | Jan 3 2003 - Jan 3 2005 | 2003-2004 | 2000 census | X         |
-| cd109 | Nov 2 2004    | 2004 | Jan 3 2005 - Jan 3 2007 | 2005-2006 | 2000 census | O         |
-| cd110 | Nov 7 2006    | 2006 | Jan 3 2007 - Jan 3 2009 | 2007-2008 | 2000 census | O         |
-| cd111 | Nov 4 2008    | 2008 | Jan 3 2009 - Jan 3 2011 | 2009-2010 | 2000 census | X         |
-| cd112 | Nov 2 2010    | 2010 | Jan 3 2011 - Jan 3 2013 | 2011-2012 | 2000 census | X         |
-| cd113 | Nov 6 2012    | 2012 | Jan 3 2013 - Jan 3 2015 | 2013-2014 | 2010 census | O         |
-| cd114 | Nov 4 2014    | 2014 | Jan 3 2015 - Jan 3 2017 | 2015-2016 | 2010 census | X         |
-| cd115 | Nov 8 2016    | 2016 | Jan 3 2017 - Jan 3 2019 | 2017-2018 | 2010 census | X         |
-| cd116 | Nov 6 2018    | 2018 | Jan 3 2019 - Jan 3 2021 | 2019-2020 | 2010 census | O         |
+|       | election year | year | term                    |           | boundaries  | natl code | disaster              |
+|-------|---------------|------|-------------------------|-----------|-------------|-----------|-----------------------|
+| cd108 | Nov 5 2002    | 2002 | Jan 3 2003 - Jan 3 2005 | 2003-2004 | 2000 census | X         | 2001-01-01 - pri date |
+| cd109 | Nov 2 2004    | 2004 | Jan 3 2005 - Jan 3 2007 | 2005-2006 | 2000 census | O         | 2003-01-01 - pri date |
+| cd110 | Nov 7 2006    | 2006 | Jan 3 2007 - Jan 3 2009 | 2007-2008 | 2000 census | O         | 2005-01-01 - pri date |
+| cd111 | Nov 4 2008    | 2008 | Jan 3 2009 - Jan 3 2011 | 2009-2010 | 2000 census | X         | 2007-01-01 - pri date |
+| cd112 | Nov 2 2010    | 2010 | Jan 3 2011 - Jan 3 2013 | 2011-2012 | 2000 census | X         | 2009-01-01 - pri date |
+| cd113 | Nov 6 2012    | 2012 | Jan 3 2013 - Jan 3 2015 | 2013-2014 | 2010 census | O         | 2011-01-01 - pri date |
+| cd114 | Nov 4 2014    | 2014 | Jan 3 2015 - Jan 3 2017 | 2015-2016 | 2010 census | X         | 2013-01-01 - pri date |
+| cd115 | Nov 8 2016    | 2016 | Jan 3 2017 - Jan 3 2019 | 2017-2018 | 2010 census | X         | 2015-01-01 - pri date |
+| cd116 | Nov 6 2018    | 2018 | Jan 3 2019 - Jan 3 2021 | 2019-2020 | 2010 census | O         | 2017-01-01 - pri date |
 
 concerns:
 - in fema dataset, congressional districts are allocated using GIS. but is this up to date to congressional district changes?
@@ -92,10 +92,67 @@ join <- function(dat){
  return(dat)
 }
 
+cd108 <- join(cd109)
+cd108$cd <- "cd108"
+cd108$year <- "2002"
+cd108$anl.begin <- as.Date("2001-01-01")
+
 cd109 <- join(cd109)
+cd109$cd <- "cd109"
+cd109$year <- "2004"
+cd109$anl.begin <- as.Date("2003-01-01")
+
 cd110 <- join(cd110)
+cd110$cd <- "cd110"
+cd110$year <- "2006"
+cd110$anl.begin <- as.Date("2005-01-01")
+
+cd111 <- cd110
+cd111$cd <- "cd111"
+cd111$year <- "2008"
+cd111$anl.begin <- as.Date("2007-01-01")
+
+cd112 <- cd110 
+cd112$cd <- "cd112"
+cd112$year <- "2010"
+cd112$anl.begin <- as.Date("2009-01-01")
+
 cd113 <- join(cd113)
+cd113$cd <- "cd113"
+cd113$year <- "2012"
+cd113$anl.begin <- as.Date("2011-01-01")
+
+cd114 <- cd113
+cd114$cd <- "cd114"
+cd114$year <- "2014"
+cd114$anl.begin <- as.Date("2013-01-01")
+
+cd115 <- cd113
+cd115$cd <- "cd115"
+cd115$year <- "2016"
+cd115$anl.begin <- as.Date("2015-01-01")
+
 cd116 <- join(cd116)
+cd116$cd <- "cd116"
+cd116$year <- "2018"
+cd116$anl.begin <- as.Date("2017-01-01")
+
+cong <- rbind(cd108, cd109, cd110, cd111, cd112, cd113, cd114, cd115, cd116)
+cong$year <- as.integer(cong$year)
+
+# add primary dates for each election year
+pri <- read.csv("primarydates.csv") # 1994-2018
+pri$pri <- as.Date(pri$date, "%m/%d/%Y")
+
+
+# add primary dates
+cong <- left_join(cong, pri %>% dplyr::select(election_year, state_abbr, pri), 
+                  by = c("year" = "election_year", "abb" = "state_abbr"))
+
+
+# save
+write.csv(cong, "cong.csv")
+
 ```
 
 
@@ -195,12 +252,32 @@ disaster <- disaster %>% drop_na("Seq")
 
 # save
 write.csv(disaster, "disaster.csv")
+
 ```
+
 
 assigning counties to disasters
+
 ```{r}
 
+# divide disaster into congressional cycles
+
+disaster$declarationDate <- as.Date(disaster$declarationDate)
+disaster$incidentBeginDate <- as.Date(disaster$incidentBeginDate)
+disaster$countycode <- as.integer(disaster$countycode)
+
+cong$anl.begin <- as.Date(cong$anl.begin)
+cong$pri <- as.Date(cong$pri)
+
+
+library(fuzzyjoin)
+
+d <- fuzzy_left_join(cong, disaster,
+                by = c("county" = "countycode", 
+                       "abb" = "stateCode.x",
+                       "anl.begin" = "declarationDate",
+                       "pri" = "declarationDate"),
+                match_fun = list(`==`, `==`, `>`, `<`))
 
 ```
-
 
