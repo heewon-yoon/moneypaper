@@ -150,6 +150,12 @@ cong <- left_join(cong, pri %>% dplyr::select(election_year, state_abbr, pri),
                   by = c("year" = "election_year", "abb" = "state_abbr"))
 
 
+cong$anl.begin <- as.Date(cong$anl.begin)
+cong$pri <- as.Date(cong$pri)
+
+cong <- cong %>% select(-c(X, state))
+
+
 # save
 write.csv(cong, "cong.csv")
 
@@ -249,6 +255,39 @@ disaster <- left_join(fema_join, emdat, by=c("stateCode.x"="abb",
 # only include intersections (disasters that exists in both)
 disaster <- disaster %>% drop_na("Seq")
 
+disaster$declarationDate <- as.Date(disaster$declarationDate)
+disaster$incidentBeginDate <- as.Date(disaster$incidentBeginDate)
+disaster$incidentEndDate <- as.Date(disaster$incidentEndDate)
+
+disaster$countycode[disaster$countycode=="0NA"] <- NA
+
+disaster$countycode <- as.integer(disaster$countycode)
+
+
+
+disaster <- distinct(disaster)
+
+
+# operationalize disaster
+
+# total death
+# median: 12, mean: 46, max: 1833
+disaster$death.med <- ifelse(disaster$Total.Deaths >= 12, 1, 0)
+disaster$death.mean <- ifelse(disaster$Total.Deaths >= 46, 1, 0)
+
+# total damages
+# median: 1600000, mean: 6904767, max: 125000000
+disaster$damage.med <- ifelse(disaster$Total.Damages...000.US.. >=1600000, 1, 0)
+disaster$damage.mean <- ifelse(disaster$Total.Damages...000.US.. >= 6904767, 1, 0)
+
+# injured, affected has too many missing values
+
+disaster$duration <- disaster$incidentEndDate - disaster$incidentBeginDate
+
+disaster <- disaster %>% select(stateCode.x, countycode, disasterName, incidentType, 
+                                declarationDate, incidentBeginDate,
+                                Total.Deaths, Total.Damages...000.US.., 
+                                death.med, death.mean, damage.med, damage.mean, duration)
 
 # save
 write.csv(disaster, "disaster.csv")
@@ -256,28 +295,148 @@ write.csv(disaster, "disaster.csv")
 ```
 
 
-assigning counties to disasters
+assigning disasters to counties
 
 ```{r}
+disaster <- disaster %>% select(-c(X))
+cong <- cong %>% select(-c(X))
 
-# divide disaster into congressional cycles
+# function to assign disaster treatment
+get_damage <- function(x) {
+  dis <- left_join(cong %>% filter(cd==x), disaster,
+                    by=c("abb"="stateCode.x", "county"="countycode"))
+  dis <- dis %>% filter(declarationDate > anl.begin &
+                              declarationDate < pri)
+  dis <- distinct(dis)
+  
+  dis_a <- dis %>% group_by(cong) %>% 
+    summarize(death1 = mean(death.mean),
+            death2 = mean(death.med),
+            damage1 = mean(damage.mean),
+            damage2 = mean(damage.med)) %>%
+    mutate(c.death1 = ifelse(death1>0.5, 1, 0),
+         c.death2 = ifelse(death2>0.5, 1, 0),
+         c.damage1 = ifelse(damage1>0.5, 1, 0),
+         c.damage2 = ifelse(damage2>0.5, 1, 0))
+  
+  cg <- distinct(cong %>% filter(cd==x) %>% select(cd, cong, year, anl.begin, pri))
+  d <- left_join(cg, dis_a, by=c("cong"="cong"))
+  
+  d$c.damage1 <- ifelse(is.na(d$c.damage1)==TRUE, 0, d$c.damage1)
+  d$c.damage2 <- ifelse(is.na(d$c.damage2)==TRUE, 0, d$c.damage2)
+  d$c.death1 <- ifelse(is.na(d$c.death1)==TRUE, 0, d$c.death1)
+  d$c.death2 <- ifelse(is.na(d$c.death2)==TRUE, 0, d$c.death2)
 
-disaster$declarationDate <- as.Date(disaster$declarationDate)
-disaster$incidentBeginDate <- as.Date(disaster$incidentBeginDate)
-disaster$countycode <- as.integer(disaster$countycode)
+  return(d)
+}
 
-cong$anl.begin <- as.Date(cong$anl.begin)
-cong$pri <- as.Date(cong$pri)
+d108 <- get_damage("cd108")
+d109 <- get_damage("cd109")
+d110 <- get_damage("cd110")
+d111 <- get_damage("cd111")
+d112 <- get_damage("cd112")
+d113 <- get_damage("cd113")
+d114 <- get_damage("cd114")
+d115 <- get_damage("cd115")
+d116 <- get_damage("cd116")
+
+dis <- rbind(d108, d109, d110, d111, d112, d113, d114, d115, d116)
 
 
+# save
+write.csv(dis, "dis.csv")
+
+
+```
+
+
+
+
+
+
+initial model of get_damage
+```{r}
+# cd108
+# cong %>% filter(cd=="cd108") %>% distinct(cong) 
+# 436 distinct congressional districts
+
+# map counties to districts
+dis108 <- left_join(cong %>% filter(cd=="cd108"), disaster, 
+                    by=c("abb"="stateCode.x", "county"="countycode"))
+
+# filter only disasters that are within date range
+dis108 <- dis108 %>% filter(declarationDate > anl.begin &
+                              declarationDate < pri)
+dis108 <- distinct(dis108)
+
+# dealing with az01, az02
+di108 <- dis108 %>% filter(cong %in% c("AZ01", "AZ02"))
+di108 <- aggregate(di108, by=list(county=di108$county, district=di108$district, abb=di108$abb),
+                 FUN=min, na.rm=TRUE)
+di108 <- di108[-c(1:3)]
+
+dis108 <- dis108 %>% filter(!cong %in% c("AZ01", "AZ02"))
+dis108 <- rbind(dis108, di108)
+
+# treatment=1 when more than half the counties within the district experienced disaster
+dis108a <- dis108 %>% group_by(cong) %>% 
+  summarize(death1 = mean(death.mean),
+            death2 = mean(death.med),
+            damage1 = mean(damage.mean),
+            damage2 = mean(damage.med)) %>%
+  mutate(c.death1 = ifelse(death1>0.5, 1, 0),
+         c.death2 = ifelse(death2>0.5, 1, 0),
+         c.damage1 = ifelse(damage1>0.5, 1, 0),
+         c.damage2 = ifelse(damage2>0.5, 1, 0))
+
+# get disaster data for the closest disaster (treatment=1 중 가장 최근)
+##### might need to modify later on
+# dis108b <- dis108 %>% group_by(cong) %>% arrange(desc(declarationDate)) %>% slice(which.max(death.mean))
+# disaster might not be the same for other disaster operationalizations
+
+
+# then rejoin to cong
+cg108 <- distinct(cong %>% filter(cd=="cd108") %>%select(cd, cong, year, anl.begin, pri))
+  
+d108 <- left_join(cg108, dis108a, by=c("cong"="cong"))
+
+d108$c.damage1 <- ifelse(is.na(d108$c.damage1)==TRUE, 0, d108$c.damage1)
+d108$c.damage2 <- ifelse(is.na(d108$c.damage2)==TRUE, 0, d108$c.damage2)
+d108$c.death1 <- ifelse(is.na(d108$c.death1)==TRUE, 0, d108$c.death1)
+d108$c.death2 <- ifelse(is.na(d108$c.death2)==TRUE, 0, d108$c.death2)
+
+
+## remove NA entries or not?? 
+# problem is NAs are going to be rendered to treatment=0
+
+
+
+
+```
+
+
+
+
+
+attempt to join disaster to congressional districts
+```{r}
 library(fuzzyjoin)
 
-d <- fuzzy_left_join(cong, disaster,
+df_list <- list()
+states <- unique(cong$abb)
+for(i in 1:length(unique(cong$abb))) {
+print(i)
+d <- fuzzy_left_join(cong %>% filter(abb==states[i]), disaster %>% filter(stateCode.x==states[i]),
                 by = c("county" = "countycode", 
-                       "abb" = "stateCode.x",
                        "anl.begin" = "declarationDate",
                        "pri" = "declarationDate"),
-                match_fun = list(`==`, `==`, `>`, `<`))
+                match_fun = list(`==`, `>`, `<=`))
+df_list[[i]] <- d
+}
+
+binded <- bind_rows(df_list)
+
+# multiple disasters in one district-cycle?
 
 ```
 
