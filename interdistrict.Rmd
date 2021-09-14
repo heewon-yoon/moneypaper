@@ -100,8 +100,7 @@ table(a$same) # difference only 0.008 (less than 1 percent)
 ```
 
 
-
-0. effect of nd on donor composition (cycle-district level)
+combine data
 ```{r}
 donation <- read.csv("donation.csv")
 # donation.csv is contributor level
@@ -109,85 +108,85 @@ donation <- donation %>% select(-c(X, contributor_gender, contributor_city, cont
                                    election_type, lname, fname, cand.gender, ran.primary, ran.general, recipient.type))
 donation$recipient_state <- toupper(donation$recipient_state)
 
-donation$same <- ifelse(donation$district == donation$con_district, 1, 0)
 
-comp <- donation %>% group_by(district, cycle) %>%
+# combine with disaster data
+
+dis <- read.csv("dis.csv")
+
+data <- left_join(donation, dis %>% select(-c(X, death1, death2, damage1, damage2)),
+                  by = c("cycle"="year", "district"="cong"))
+
+# save
+write.csv(data, "data.csv")
+```
+
+
+
+# Analysis
+
+0. effect of nd on donor composition (cycle-district level)
+```{r}
+data <- read.csv("data.csv")
+dis <- read.csv("dis.csv")
+
+data <- data %>% filter(cycle > 2000)
+
+data$same <- ifelse(data$district == data$con_district, 1, 0)
+
+comp <- data %>% group_by(district, cycle) %>%
   summarize(count = n(),
             ind = sum(same==1),
             outd = sum(same==0),
             ind_cont = sum(amount[same==1]),
             outd_cont = sum(amount[same==0]))
+# ind:  # of in-district donors
+# outd: # of out-of-district donors
+# ind_cont: amount of in-district donations
+# outd_cont:amount of out-of-district donations
 
-comp$out.pct <- comp$outd/comp$count
-comp$out.amt.pct <- comp$outd_cont/(comp$outd_cont + comp$ind_cont)
+comp$out <- comp$outd/comp$count
+comp$out_amt <- comp$outd_cont/(comp$outd_cont + comp$ind_cont)
+# out: proportion of out-of-district donors
+# out_amt: proportion of out-of-district donation amount
 
+comp <- left_join(comp, dis %>% select(cd, cong, year, anl.begin, pri, 
+                                        c.death1, c.death2, c.damage1, c.damage2),
+                  by = c("district"="cong", "cycle"="year"))
 
-
-
+## cycle 2002-2014 (congress 108-114)
 
 ```
-
-
-
-
-
-
-combine dime with disaster data (made from mapping.rmd)
-can start from using "donation.csv" dataset
-```{r}
-# recipient and contributor data is merged as donation.csv
-donation <- read.csv("donation.csv")
-disaster <- read.csv("cd.join.csv")
-
-# maybe i wanted to extract year from primary date data and put into disaster
-# pri <- read.csv("primarydates.csv")
-# pri$pri.date <- as.Date(pri$date, "%m/%d/%Y")
-# pri <- subset(pri, election_year <= 2014)
-# disaster$pri.date.x <- as.Date(disaster$pri.date.x)
-# # disaster <- left_join(disaster, pri %>% dplyr::select(pri.date, election_year),
-# #                       by=c("year"="election_year", "pri.date.x"="pri.date"))
-
-# congress: term: election year (where to look)
-# 107: 01-03 : 00 (data between 99-01-01 ~ 00-primary-dd)
-# 108: 03-05 : 02 (data between 01-01-01 ~ 02-primary-dd)
-# 109: 05-07 : 04  (data between 03-01-01 ~ 04-primary-dd)
-# 110: 07-09 : 06  (data between 05-01-01 ~ 06-primary-dd)
-# 111: 09-11 : 08  (data between 07-01-01 ~ 08-primary-dd)
-# 112: 11-13 : 10 (data between 09-01-01 ~ 10-primary-dd)
-# 113: 13-15 : 12 (data between 11-01-01 ~ 12-primary-dd) 
-# 114: 15-17 : 14 (data between 13-01-01 ~ 14-primary-dd)
-
-data <- left_join(donation, disaster %>% dplyr::select(cong, year, pri.date.x,
-                                                       treat, declarationDate, close), 
-                  by=c("district"="cong", "cycle"="year"))
-
-write.csv(data, "data.csv")
-```
-
-
-0. how do natural disasters affect donor composition?
 $$
 \%.of.within = disaster_{it} + \gamma_i + \eta_t + \epsilon
 $$
 ```{r}
-data <- read.csv("data.csv")
+library(broom)
 
-# district
-data$same <- ifelse(data$district==data$con_district, 1, 0)
+prop <- function(x){
+  a <- tidy(lm(out ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  b <- tidy(lm(out_amt ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  c <- tidy(lm(ind ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  d <- tidy(lm(ind_cont ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  e <- tidy(lm(outd ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  f <-tidy(lm(outd_cont ~ x + factor(district) + factor(cycle), data=comp))[2,]
+  dat <- data.frame(rbind(a,b,c,d,e,f))
+  dat$outcome <- c("prop.out", "prop.out_amt", "n.ind", "ind_amt", "n.outd", "outd_amt")
+  return(dat)
+}
 
-cand <- data %>% group_by(district, cycle) %>% dplyr::summarize(count=n(), ind=sum(same==1), out=sum(same==0), ind_cont = sum(amount[same==1]), out_cont = sum(amount[same==0]), disaster = max(treat, na.rm=F))
+death1 <- prop(comp$c.death1)
+death2 <- prop(comp$c.death2)
+damage1 <- prop(comp$c.damage1)
+damage2 <- prop(comp$c.damage2)
 
-cand$out.num <- cand$out/(cand$ind+cand$out)
-cand$out.amount <- cand$out_cont/(cand$ind_cont+cand$out_cont)
 
-summary(lm(rat_out ~ disaster + factor(district) + factor(cycle), data=cand))
+```
 
-summary(lm(ind ~ disaster + factor(district)+factor(cycle), cand))
-summary(lm(ind_cont ~ disaster + factor(district)+factor(cycle), cand))
 
-summary(lm(out ~ disaster + factor(district)+factor(cycle), cand))
-summary(lm(out_cont ~ disaster + factor(district)+factor(cycle), cand))
 
+0. how do natural disasters affect donor composition?
+
+```{r}
 
 # state
 data$same.st <- ifelse(data$contributor_state==data$recipient_state, 1, 0)
